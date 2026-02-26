@@ -212,7 +212,7 @@ func handleReady(db *storage.Client) http.HandlerFunc {
 }
 
 // setupLogger creates a logger that writes to stdout and optionally to a log file.
-// If logFilePath is empty or "-", logs only to stdout (useful for Docker).
+// If logFilePath is empty or "-", logs only to stdout.
 func setupLogger(logFilePath string, level slog.Level) (*os.File, *slog.Logger, error) {
 	var writer io.Writer = os.Stdout
 	var logFile *os.File

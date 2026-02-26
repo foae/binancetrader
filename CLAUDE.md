@@ -22,11 +22,6 @@ Run a single test:
 go test -race -run TestName ./service/...
 ```
 
-Local infrastructure (DragonFly DB):
-```bash
-docker compose up -d
-```
-
 
 ## Architecture
 

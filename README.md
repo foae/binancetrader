@@ -11,11 +11,6 @@ make build-docker     # Build Docker image
 make run-docker       # Build and run in Docker (host networking)
 ```
 
-Local infrastructure (DragonFly DB):
-```bash
-docker compose up -d
-```
-
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your values. The `.env` file is gitignored and must never be committed.
