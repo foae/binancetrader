@@ -18,4 +18,4 @@ docker compose up -d
 
 ## Configuration
 
-Copy .env.example to .env and configure it locally. Never commit credentials.
+Copy `.env.example` to `.env` and fill in your values. The `.env` file is gitignored and must never be committed.

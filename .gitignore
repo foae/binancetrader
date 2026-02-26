@@ -14,7 +14,7 @@
 go.work
 
 # Environment variables (may contain secrets)
-# .env is encrypted via git-crypt (see .gitattributes)
+.env
 .env.*
 !.env.example
 
