@@ -1,0 +1,21 @@
+# binancetrader
+
+Automated trading bot for Binance. Currently a skeleton — service-per-asset goroutine architecture is in place, trading strategies TBD.
+
+## Build & Development
+
+```bash
+make run              # Run locally with race detector
+make test             # fmt + vet + race-detector tests
+make build-docker     # Build Docker image
+make run-docker       # Build and run in Docker (host networking)
+```
+
+Local infrastructure (DragonFly DB):
+```bash
+docker compose up -d
+```
+
+## Configuration
+
+Copy .env.example to .env and configure it locally. Never commit credentials.
