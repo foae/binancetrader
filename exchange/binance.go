@@ -29,6 +29,14 @@ func WithTestnet() Option {
 	}
 }
 
+// WithDemo enables the Binance demo trading endpoints (demo-api.binance.com).
+// Requires API keys from https://demo.binance.com/
+func WithDemo() Option {
+	return func() {
+		binance.UseDemo = true
+	}
+}
+
 // NewClient creates a new Binance spot client.
 func NewClient(apiKey, apiSecret string, opts ...Option) *Client {
 	for _, opt := range opts {

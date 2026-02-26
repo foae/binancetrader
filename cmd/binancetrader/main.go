@@ -40,6 +40,8 @@ type config struct {
 	// Binance API
 	BinanceAPIKey    string `env:"BINANCE_API_KEY,required"`
 	BinanceAPISecret string `env:"BINANCE_API_SECRET,required"`
+	// "live", "demo" (demo-api.binance.com), or "testnet" (testnet.binance.vision)
+	BinanceMode string `env:"BINANCE_MODE" envDefault:"live"`
 
 	// Trading
 	EnabledPairs string `env:"ENABLED_PAIRS,required" envDefault:"BTC/USDC"`
@@ -93,12 +95,29 @@ func main() {
 	}()
 
 	// Initialize Binance client
-	binanceClient := exchange.NewClient(cfg.BinanceAPIKey, cfg.BinanceAPISecret)
+	var binanceOpts []exchange.Option
+	switch cfg.BinanceMode {
+	case "live":
+		// production, no options needed
+	case "demo":
+		binanceOpts = append(binanceOpts, exchange.WithDemo())
+	case "testnet":
+		binanceOpts = append(binanceOpts, exchange.WithTestnet())
+	default:
+		log.Fatalf("invalid BINANCE_MODE %q (valid: live, demo, testnet)", cfg.BinanceMode)
+	}
+	slog.Info("Binance mode", "mode", cfg.BinanceMode)
+	binanceClient := exchange.NewClient(cfg.BinanceAPIKey, cfg.BinanceAPISecret, binanceOpts...)
 
 	if err := binanceClient.Ping(ctx); err != nil {
 		log.Fatalf("binance API ping failed: %v", err)
 	}
-	slog.Info("Binance API connectivity OK")
+
+	account, err := binanceClient.Account(ctx)
+	if err != nil {
+		log.Fatalf("binance API authentication failed: %v", err)
+	}
+	slog.Info("Binance API OK", "can_trade", account.CanTrade)
 
 	// Create service
 	svc, err := service.New(ctx, binanceClient, storageClient, service.Config{
