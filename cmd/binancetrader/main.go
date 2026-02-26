@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/foae/binancetrader/exchange"
 	"github.com/foae/binancetrader/service"
 	"github.com/foae/binancetrader/storage"
 	"github.com/go-chi/chi/v5"
@@ -27,14 +28,6 @@ import (
 	_ "github.com/joho/godotenv/autoload"
 )
 
-// validAssets defines the set of supported asset identifiers.
-var validAssets = map[string]bool{
-	"btc": true,
-	"eth": true,
-	"xrp": true,
-	"sol": true,
-}
-
 type config struct {
 	ListenAddress string `env:"HTTP_LISTEN_ADDRESS,required" envDefault:":8123"`
 	EnvMode       string `env:"ENV_MODE,required" envDefault:"dev"`
@@ -44,9 +37,13 @@ type config struct {
 	// Storage (DragonFly/Redis)
 	RedisURL string `env:"REDIS_URL,required" envDefault:"redis://localhost:6379/0"`
 
-	// Strategy
-	EnabledAssets string `env:"ENABLED_ASSETS" envDefault:"btc"`
-	DryRun        bool   `env:"DRY_RUN" envDefault:"false"`
+	// Binance API
+	BinanceAPIKey    string `env:"BINANCE_API_KEY,required"`
+	BinanceAPISecret string `env:"BINANCE_API_SECRET,required"`
+
+	// Trading
+	EnabledPairs string `env:"ENABLED_PAIRS,required" envDefault:"BTC/USDC"`
+	DryRun       bool   `env:"DRY_RUN" envDefault:"true"`
 }
 
 func main() {
@@ -78,10 +75,10 @@ func main() {
 	}()
 	slog.SetDefault(logger)
 
-	// Parse and validate enabled assets
-	assets, err := parseAssets(cfg.EnabledAssets)
+	// Parse and validate enabled pairs
+	pairs, err := parsePairs(cfg.EnabledPairs)
 	if err != nil {
-		log.Fatalf("invalid ENABLED_ASSETS: %v", err)
+		log.Fatalf("invalid ENABLED_PAIRS: %v", err)
 	}
 
 	// Initialize storage client
@@ -95,27 +92,29 @@ func main() {
 		}
 	}()
 
-	// Create one service per enabled asset.
-	services := make([]*service.Service, 0, len(assets))
-	for _, asset := range assets {
-		svc, err := service.New(ctx, storageClient, service.Config{
-			Asset:  asset,
-			DryRun: cfg.DryRun,
-		})
-		if err != nil {
-			log.Fatalf("failed to initialize %s service: %v", asset, err)
-		}
-		services = append(services, svc)
+	// Initialize Binance client
+	binanceClient := exchange.NewClient(cfg.BinanceAPIKey, cfg.BinanceAPISecret)
+
+	if err := binanceClient.Ping(ctx); err != nil {
+		log.Fatalf("binance API ping failed: %v", err)
+	}
+	slog.Info("Binance API connectivity OK")
+
+	// Create service
+	svc, err := service.New(ctx, binanceClient, storageClient, service.Config{
+		Pairs:  pairs,
+		DryRun: cfg.DryRun,
+	})
+	if err != nil {
+		log.Fatalf("failed to initialize service: %v", err)
 	}
 	defer func() {
-		for _, svc := range services {
-			if err := svc.Close(); err != nil {
-				slog.Error("Failed to close service", "error", err)
-			}
+		if err := svc.Close(); err != nil {
+			slog.Error("Failed to close service", "error", err)
 		}
 	}()
 
-	slog.Info("Services started", "assets", assets, "count", len(services))
+	slog.Info("Service started", "pairs", pairs)
 
 	r := chi.NewRouter()
 	r.Use(
@@ -164,32 +163,44 @@ func main() {
 	}
 }
 
-// parseAssets parses and validates a comma-separated list of asset identifiers.
-func parseAssets(raw string) ([]string, error) {
+// parsePairs parses and validates a comma-separated list of trading pairs.
+// Input format: "BTC/USDC,ETH/USDC" → Output: ["BTCUSDC", "ETHUSDC"]
+func parsePairs(raw string) ([]string, error) {
 	parts := strings.Split(raw, ",")
 	seen := make(map[string]bool, len(parts))
-	assets := make([]string, 0, len(parts))
+	pairs := make([]string, 0, len(parts))
 
 	for _, p := range parts {
-		asset := strings.TrimSpace(strings.ToLower(p))
-		if asset == "" {
+		p = strings.TrimSpace(p)
+		if p == "" {
 			continue
 		}
-		if !validAssets[asset] {
-			return nil, fmt.Errorf("unknown asset %q (valid: btc, eth, xrp, sol)", asset)
+
+		base, quote, ok := strings.Cut(p, "/")
+		if !ok {
+			return nil, fmt.Errorf("invalid pair format %q — expected BASE/QUOTE (e.g., BTC/USDC)", p)
 		}
-		if seen[asset] {
+
+		base = strings.TrimSpace(strings.ToUpper(base))
+		quote = strings.TrimSpace(strings.ToUpper(quote))
+
+		if base == "" || quote == "" {
+			return nil, fmt.Errorf("invalid pair format %q — base and quote must be non-empty", p)
+		}
+
+		symbol := base + quote
+		if seen[symbol] {
 			continue // deduplicate
 		}
-		seen[asset] = true
-		assets = append(assets, asset)
+		seen[symbol] = true
+		pairs = append(pairs, symbol)
 	}
 
-	if len(assets) == 0 {
-		return nil, fmt.Errorf("at least one asset must be enabled")
+	if len(pairs) == 0 {
+		return nil, fmt.Errorf("at least one pair must be enabled")
 	}
 
-	return assets, nil
+	return pairs, nil
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {

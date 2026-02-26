@@ -7,208 +7,142 @@ import (
 	"time"
 )
 
-// Config holds strategy parameters for the service.
-type Config struct {
-	Asset  string // Required: asset identifier (e.g., "btc", "eth")
-	DryRun bool
-}
-
-// WindowPhase tracks progress through a single trading window.
-type WindowPhase int
+// EventType distinguishes the source of a main loop trigger.
+type EventType int
 
 const (
-	PhaseWaiting WindowPhase = iota
-	PhaseDone
+	EventTick  EventType = iota // Regular 1-minute ticker
+	EventAsync                  // External async event (websocket, webhook, etc.)
 )
 
-// WindowState holds all state for a single trading window.
-type WindowState struct {
-	Slug        string
-	WindowStart time.Time
-	WindowEnd   time.Time
-	Phase       WindowPhase
+// TriggerEvent is sent into the main loop to trigger a tick.
+type TriggerEvent struct {
+	Type    EventType
+	Source  string // Human-readable origin, e.g. "websocket", "webhook"
+	Payload any    // Opaque data for the handler (unused for now)
 }
 
-// storageClient defines the subset of the storage layer used by the service.
+// exchangeClient defines the exchange operations the service depends on.
+type exchangeClient interface {
+	Ping(ctx context.Context) error
+	TickerPrice(ctx context.Context, symbol string) (string, error)
+}
+
+// storageClient defines the storage operations the service depends on.
 type storageClient interface {
 	Close() error
 }
 
+// Config holds service configuration.
+type Config struct {
+	Pairs  []string // Binance symbols: "BTCUSDC", "ETHUSDC"
+	DryRun bool
+}
+
+// Service is the single orchestrator that runs the main trading loop
+// across all configured pairs.
 type Service struct {
+	exchange  exchangeClient
 	db        storageClient
 	cfg       Config
 	ctx       context.Context
-	tradingCh chan *WindowState
-	log       *slog.Logger // asset-scoped base logger
+	triggerCh chan TriggerEvent
+	log       *slog.Logger
 }
 
-func New(ctx context.Context, db storageClient, cfg Config) (*Service, error) {
-	if cfg.Asset == "" {
-		return nil, fmt.Errorf("Asset must be set")
+// New creates and starts the service. The main loop runs in a background
+// goroutine and stops when ctx is cancelled.
+func New(ctx context.Context, exchange exchangeClient, db storageClient, cfg Config) (*Service, error) {
+	if len(cfg.Pairs) == 0 {
+		return nil, fmt.Errorf("at least one pair must be configured")
 	}
 
 	svc := &Service{
+		exchange:  exchange,
 		db:        db,
 		cfg:       cfg,
 		ctx:       ctx,
-		tradingCh: make(chan *WindowState, 2),
-		log:       slog.With("asset", cfg.Asset),
+		triggerCh: make(chan TriggerEvent, 16),
+		log:       slog.With("component", "service"),
 	}
 
-	go svc.discoveryLoop()
-	go svc.tradingLoop()
+	go svc.run()
 
 	return svc, nil
 }
 
-// Close closes the service resources.
+// Close releases service resources.
 func (s *Service) Close() error {
 	return nil
 }
 
-// currentWindowStart returns the most recent 15-minute boundary at or before t.
-func currentWindowStart(t time.Time) time.Time {
-	t = t.UTC()
-	minute := t.Minute()
-	aligned := minute - (minute % 15)
-	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), aligned, 0, 0, time.UTC)
+// Inject sends an async trigger event into the main loop.
+// Non-blocking: drops the event if the channel buffer is full.
+func (s *Service) Inject(evt TriggerEvent) {
+	select {
+	case s.triggerCh <- evt:
+	default:
+		s.log.Warn("Trigger channel full, dropping event", "source", evt.Source)
+	}
 }
 
-// nextWindowStart returns the next 15-minute boundary strictly after t.
-func nextWindowStart(t time.Time) time.Time {
-	return currentWindowStart(t).Add(15 * time.Minute)
-}
-
-// windowSlug returns a unique identifier for a given asset and window start time.
-func windowSlug(asset string, windowStart time.Time) string {
-	return fmt.Sprintf("%s-%d", asset, windowStart.UTC().Unix())
-}
-
-// discoveryLoop periodically discovers new trading windows and sends them
-// to tradingCh for processing. Ticks every 30s, fires immediately on start.
-func (s *Service) discoveryLoop() {
-	defer close(s.tradingCh)
-
-	l := s.log.With("component", "discovery")
+// run is the main loop goroutine. It fires on a 1-minute ticker or on
+// async events injected via triggerCh. Async events reset the ticker
+// (debounce) so the next scheduled tick is always 1 minute from the
+// last processed event.
+func (s *Service) run() {
+	l := s.log.With("loop", "main")
 
 	if s.cfg.DryRun {
-		l.Info("Strategy running in DRY RUN mode — no real orders will be placed")
+		l.Info("Running in DRY RUN mode")
 	}
 
-	l.Info("Discovery loop started")
+	l.Info("Main loop started", "pairs", s.cfg.Pairs)
 
-	tracked := make(map[string]time.Time) // slug -> windowEnd
+	// Fire immediately on startup.
+	s.tick(l)
 
-	// Check context before firing the immediate tick.
-	select {
-	case <-s.ctx.Done():
-		return
-	default:
-	}
-
-	// Fire immediately on start.
-	s.discoveryTick(l, tracked)
-
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-s.ctx.Done():
+			l.Info("Main loop stopped")
 			return
+
+		case evt := <-s.triggerCh:
+			// Async event: process and reset ticker (debounce).
+			ticker.Reset(1 * time.Minute)
+			l.Info("Async trigger received", "source", evt.Source, "type", evt.Type)
+			s.tick(l)
+
 		case <-ticker.C:
-			s.discoveryTick(l, tracked)
+			s.tick(l)
 		}
 	}
 }
 
-// discoveryTick runs a single tick of window discovery. It checks the current
-// and next windows, and sends undiscovered ones to tradingCh.
-func (s *Service) discoveryTick(l *slog.Logger, tracked map[string]time.Time) {
-	now := time.Now().UTC()
+// tick runs one iteration of the main loop across all configured pairs.
+func (s *Service) tick(l *slog.Logger) {
+	l.Debug("Tick started")
 
-	// Prune expired entries.
-	for slug, windowEnd := range tracked {
-		if now.After(windowEnd) {
-			delete(tracked, slug)
-		}
+	for _, pair := range s.cfg.Pairs {
+		s.processPair(l, pair)
 	}
 
-	candidates := []time.Time{currentWindowStart(now), nextWindowStart(now)}
-
-	for _, ws := range candidates {
-		slug := windowSlug(s.cfg.Asset, ws)
-
-		// Skip already-tracked windows.
-		if _, ok := tracked[slug]; ok {
-			continue
-		}
-
-		windowEnd := ws.Add(15 * time.Minute)
-
-		// Skip windows that already ended.
-		if now.After(windowEnd) {
-			continue
-		}
-
-		tracked[slug] = windowEnd
-
-		state := &WindowState{
-			Slug:        slug,
-			WindowStart: ws,
-			WindowEnd:   windowEnd,
-			Phase:       PhaseWaiting,
-		}
-
-		l.Info("Window discovered", "window", slug)
-
-		// TODO: Add exchange-specific market discovery here.
-
-		select {
-		case s.tradingCh <- state:
-		case <-s.ctx.Done():
-			return
-		}
-	}
+	l.Debug("Tick completed")
 }
 
-// tradingLoop reads discovered windows from tradingCh and processes each one.
-func (s *Service) tradingLoop() {
-	for state := range s.tradingCh {
-		s.tradeWindow(state)
-	}
-}
+// processPair handles a single pair during a tick.
+func (s *Service) processPair(l *slog.Logger, pair string) {
+	pl := l.With("pair", pair)
 
-// tradeWindow handles the full lifecycle of a single discovered window.
-func (s *Service) tradeWindow(state *WindowState) {
-	l := s.log.With("component", "trading", "window", state.Slug)
-	l.Info("Processing window")
+	// TODO: Implement trading strategy.
+	// 1. Fetch current price via s.exchange.TickerPrice(ctx, pair)
+	// 2. Evaluate indicators / signals
+	// 3. Decide whether to enter / exit
+	// 4. Place orders if criteria met
 
-	// TODO: Implement strategy-specific trading logic here.
-	// The pattern is:
-	//   1. sleepUntil(checkpoint time)
-	//   2. Evaluate market conditions
-	//   3. Decide whether to enter
-	//   4. Place order if criteria met
-
-	state.Phase = PhaseDone
-}
-
-// sleepUntil blocks until the target time or context cancellation.
-// Returns true if the target time was reached, false if context was cancelled.
-func (s *Service) sleepUntil(t time.Time) bool {
-	d := time.Until(t)
-	if d <= 0 {
-		return true
-	}
-
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-
-	select {
-	case <-s.ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
+	pl.Debug("Processing pair")
 }

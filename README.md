@@ -1,6 +1,6 @@
 # binancetrader
 
-Automated trading bot for Binance. Currently a skeleton — service-per-asset goroutine architecture is in place, trading strategies TBD.
+Automated trading bot for Binance. Single service orchestrates all configured trading pairs with a 1-minute main loop, debounced by async events. Trading strategies TBD.
 
 ## Build & Development
 

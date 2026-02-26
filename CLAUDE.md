@@ -4,9 +4,7 @@ This file provides guidance when working with code in this repository.
 
 ## Project Overview
 
-binancetrader is an automated trading bot for Binance. Currently a skeleton — the service-per-asset goroutine architecture is in place (ported from a production Polymarket bot), but trading strategies, exchange client, and storage schema are TBD.
-
-Each enabled asset runs as an independent service instance sharing a single storage backend. The architecture supports multiple concurrent strategies across different trading pairs.
+binancetrader is an automated trading bot for Binance. A single service orchestrates all configured trading pairs with a 1-minute main loop, debounced by async events (websocket, webhooks). Trading strategies and order placement are TBD.
 
 ## Build & Development Commands
 
@@ -28,20 +26,25 @@ go test -race -run TestName ./service/...
 ```
 cmd/binancetrader/main.go  →  Entry point, config loading, HTTP server (Chi on :8123)
                                Routes: /health, /ready, /metrics
-                               Parses ENABLED_ASSETS, creates one Service per asset
+                               Parses ENABLED_PAIRS (BTC/USDC → BTCUSDC), creates
+                               Binance client, single Service for all pairs
 
-service/service.go         →  Skeleton service (one instance per asset)
-                               - Two goroutines per asset: discoveryLoop (30s ticker)
-                                 finds windows, tradingLoop processes them
-                               - Window alignment to :00/:15/:30/:45 UTC boundaries
-                               - Asset-scoped structured logging
-                               - sleepUntil helper for checkpoint timing
-                               - TODO: exchange client interface, strategy logic, order placement
+exchange/binance.go        →  Binance spot client (wraps github.com/adshao/go-binance/v2)
+                               - Public: Ping, ServerTime, TickerPrice, Klines
+                               - Authenticated: Account, CreateOrder, GetOrder,
+                                 CancelOrder, ListOpenOrders
+                               - Spot() exposes underlying go-binance client
+                               - WithTestnet() option for testnet keys
+                               - WebSocket intentionally excluded (go-binance#800
+                                 data race); will build our own WS layer later
 
-indicators/                →  taapi.io bulk API client (optional, enabled via TAAPI_SECRET)
-                               - Exchange-agnostic technical indicator fetching
-                               - 10 indicators across 3 intervals (1m, 5m, 15m)
-                               - Partial failure tolerant
+service/service.go         →  Single orchestrator for all configured pairs
+                               - 1-minute ticker triggers main loop
+                               - triggerCh (buffered 16) for async events
+                               - Async events reset ticker (debounce)
+                               - Inject() method for external event sources
+                               - tick() iterates all pairs, processPair() per pair
+                               - TODO: strategy logic, order placement
 
 storage/client.go          →  Generic Redis/DragonFly JSON store
                                - Key scheme: {table}:{id}
@@ -54,7 +57,10 @@ storage/client.go          →  Generic Redis/DragonFly JSON store
 Environment variables loaded from `.env` (see `.env.example`). Key vars:
 - `ENV_MODE`: `dev` (DEBUG logs) or `prod` (INFO logs)
 - `REDIS_URL`: DragonFly/Redis connection string
+- `BINANCE_API_KEY` / `BINANCE_API_SECRET`: Binance API credentials
+- `ENABLED_PAIRS`: Comma-separated trading pairs, format `BASE/QUOTE` (e.g., `BTC/USDC,ETH/USDC`)
+- `DRY_RUN`: `true` (default) disables real order placement
 
 ## Testing Patterns
 
-Tests use table-driven style. Indicator client tests use `net/http/httptest` to mock the taapi.io bulk endpoint. Service tests should use interface mocks for the exchange client and storage layer.
+Tests use table-driven style. Service tests should use interface mocks for the exchange client and storage layer.
