@@ -65,7 +65,9 @@ service/strategy.go        →  Buy-low/sell-high strategy
                                - placeBuyOrder(): market × (1-BUY_OFFSET), GTC limit
                                - placeSellOrder(): entry × (1+TAKE_PROFIT), GTC limit
                                - checkExpiredOrders(): cancel GTC > ORDER_EXPIRY
-                               - Symbol filters cached per symbol (via Spot() escape hatch)
+                               - Symbol filters cached per symbol (via Spot() escape hatch),
+                                 includes MinNotional validation
+                               - Immediate fills handled inline (no wait for next tick)
                                - DRY_RUN: logs intent, saves synthetic order records
                                - Rounding: roundToTickSize, roundToStepSize (floor)
 
