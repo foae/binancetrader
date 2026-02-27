@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	binance "github.com/adshao/go-binance/v2"
+	"github.com/shopspring/decimal"
 )
 
 // EventType distinguishes the source of a main loop trigger.
@@ -26,28 +29,42 @@ type TriggerEvent struct {
 type exchangeClient interface {
 	Ping(ctx context.Context) error
 	TickerPrice(ctx context.Context, symbol string) (string, error)
+	CreateOrder(ctx context.Context, symbol string, side binance.SideType, orderType binance.OrderType, configure func(*binance.CreateOrderService)) (*binance.CreateOrderResponse, error)
+	GetOrder(ctx context.Context, symbol string, orderID int64) (*binance.Order, error)
+	CancelOrder(ctx context.Context, symbol string, orderID int64) (*binance.CancelOrderResponse, error)
+	ListOpenOrders(ctx context.Context, symbol string) ([]*binance.Order, error)
+	Spot() *binance.Client
 }
 
 // storageClient defines the storage operations the service depends on.
 type storageClient interface {
 	Close() error
+	Set(ctx context.Context, table, id string, value any) error
+	Get(ctx context.Context, table, id string, dest any) error
+	Delete(ctx context.Context, table, id string) error
+	List(ctx context.Context, table string, factory func() any) ([]any, error)
 }
 
 // Config holds service configuration.
 type Config struct {
-	Pairs  []string // Binance symbols: "BTCUSDC", "ETHUSDC"
-	DryRun bool
+	Pairs          []PairConfig
+	DryRun         bool
+	BuyOffset      decimal.Decimal // How far below market to place buy (e.g. 0.001 = 0.1%)
+	BuyQuantityUSDC decimal.Decimal // USDC amount per buy order
+	TakeProfit     decimal.Decimal // Sell target above entry (e.g. 0.01 = 1%)
+	OrderExpiry    time.Duration   // Cancel open orders older than this
 }
 
 // Service is the single orchestrator that runs the main trading loop
 // across all configured pairs.
 type Service struct {
-	exchange  exchangeClient
-	db        storageClient
-	cfg       Config
-	ctx       context.Context
-	triggerCh chan TriggerEvent
-	log       *slog.Logger
+	exchange      exchangeClient
+	db            storageClient
+	cfg           Config
+	ctx           context.Context
+	triggerCh     chan TriggerEvent
+	log           *slog.Logger
+	symbolFilters map[string]*SymbolFilters
 }
 
 // New creates and starts the service. The main loop runs in a background
@@ -58,12 +75,13 @@ func New(ctx context.Context, exchange exchangeClient, db storageClient, cfg Con
 	}
 
 	svc := &Service{
-		exchange:  exchange,
-		db:        db,
-		cfg:       cfg,
-		ctx:       ctx,
-		triggerCh: make(chan TriggerEvent, 16),
-		log:       slog.With("component", "service"),
+		exchange:      exchange,
+		db:            db,
+		cfg:           cfg,
+		ctx:           ctx,
+		triggerCh:     make(chan TriggerEvent, 16),
+		log:           slog.With("component", "service"),
+		symbolFilters: make(map[string]*SymbolFilters),
 	}
 
 	go svc.run()
@@ -132,17 +150,4 @@ func (s *Service) tick(l *slog.Logger) {
 	}
 
 	l.Debug("Tick completed")
-}
-
-// processPair handles a single pair during a tick.
-func (s *Service) processPair(l *slog.Logger, pair string) {
-	pl := l.With("pair", pair)
-
-	// TODO: Implement trading strategy.
-	// 1. Fetch current price via s.exchange.TickerPrice(ctx, pair)
-	// 2. Evaluate indicators / signals
-	// 3. Decide whether to enter / exit
-	// 4. Place orders if criteria met
-
-	pl.Debug("Processing pair")
 }

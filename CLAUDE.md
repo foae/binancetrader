@@ -4,7 +4,7 @@ This file provides guidance when working with code in this repository.
 
 ## Project Overview
 
-binancetrader is an automated trading bot for Binance. A single service orchestrates all configured trading pairs with a 1-minute main loop, debounced by async events (websocket, webhooks). Trading strategies and order placement are TBD.
+binancetrader is an automated trading bot for Binance. A single service orchestrates all configured trading pairs with a 1-minute main loop, debounced by async events (websocket, webhooks). Strategy: buy-low/sell-high — place GTC limit buys below market, sell at take-profit. Orders have manual expiry management (Binance spot has no GTT).
 
 ## Build & Development Commands
 
@@ -44,7 +44,30 @@ service/service.go         →  Single orchestrator for all configured pairs
                                - Async events reset ticker (debounce)
                                - Inject() method for external event sources
                                - tick() iterates all pairs, processPair() per pair
-                               - TODO: strategy logic, order placement
+                               - exchangeClient interface: Ping, TickerPrice,
+                                 CreateOrder, GetOrder, CancelOrder, ListOpenOrders, Spot
+                               - storageClient interface: Close, Set, Get, Delete, List
+
+service/types.go           →  Domain types
+                               - PairConfig{Symbol, Base, Quote}
+                               - OrderRecord — local mirror of Binance order
+                                 Key: orders:{symbol}:{orderID}
+                               - Position — inventory per symbol (one max)
+                                 Key: positions:{symbol}
+                               - SymbolFilters — cached lot/price filter params
+                               - All financial fields use shopspring/decimal
+
+service/strategy.go        →  Buy-low/sell-high strategy
+                               - processPair(): fetch price → syncOrders →
+                                 checkExpiredOrders → evaluate state → place order
+                               - syncOrders(): reconcile DB vs Binance open orders,
+                                 handle fills (create/delete positions)
+                               - placeBuyOrder(): market × (1-BUY_OFFSET), GTC limit
+                               - placeSellOrder(): entry × (1+TAKE_PROFIT), GTC limit
+                               - checkExpiredOrders(): cancel GTC > ORDER_EXPIRY
+                               - Symbol filters cached per symbol (via Spot() escape hatch)
+                               - DRY_RUN: logs intent, saves synthetic order records
+                               - Rounding: roundToTickSize, roundToStepSize (floor)
 
 storage/client.go          →  Generic Redis/DragonFly JSON store
                                - Key scheme: {table}:{id}
@@ -58,8 +81,13 @@ Environment variables loaded from `.env` (see `.env.example`). Key vars:
 - `ENV_MODE`: `dev` (DEBUG logs) or `prod` (INFO logs)
 - `REDIS_URL`: DragonFly/Redis connection string
 - `BINANCE_API_KEY` / `BINANCE_API_SECRET`: Binance API credentials
+- `BINANCE_MODE`: `live`, `demo`, or `testnet`
 - `ENABLED_PAIRS`: Comma-separated trading pairs, format `BASE/QUOTE` (e.g., `BTC/USDC,ETH/USDC`)
 - `DRY_RUN`: `true` (default) disables real order placement
+- `BUY_OFFSET`: Decimal, how far below market to buy (default `0.001` = 0.1%)
+- `BUY_QUANTITY_USDC`: Decimal, USDC amount per buy order (default `5`)
+- `TAKE_PROFIT`: Decimal, sell target above entry (default `0.01` = 1%)
+- `ORDER_EXPIRY`: Go duration, cancel stale GTC orders (default `1h`)
 
 ## Testing Patterns
 

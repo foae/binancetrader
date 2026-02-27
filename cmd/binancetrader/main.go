@@ -23,6 +23,7 @@ import (
 	mw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	slogchi "github.com/samber/slog-chi"
+	"github.com/shopspring/decimal"
 
 	"github.com/caarlos0/env/v10"
 	_ "github.com/joho/godotenv/autoload"
@@ -44,8 +45,12 @@ type config struct {
 	BinanceMode string `env:"BINANCE_MODE" envDefault:"live"`
 
 	// Trading
-	EnabledPairs string `env:"ENABLED_PAIRS,required" envDefault:"BTC/USDC"`
-	DryRun       bool   `env:"DRY_RUN" envDefault:"true"`
+	EnabledPairs    string `env:"ENABLED_PAIRS,required" envDefault:"BTC/USDC"`
+	DryRun          bool   `env:"DRY_RUN" envDefault:"true"`
+	BuyOffset       string `env:"BUY_OFFSET" envDefault:"0.001"`
+	BuyQuantityUSDC string `env:"BUY_QUANTITY_USDC" envDefault:"5"`
+	TakeProfit      string `env:"TAKE_PROFIT" envDefault:"0.01"`
+	OrderExpiry     string `env:"ORDER_EXPIRY" envDefault:"1h"`
 }
 
 func main() {
@@ -119,10 +124,32 @@ func main() {
 	}
 	slog.Info("Binance API OK", "can_trade", account.CanTrade)
 
+	// Parse strategy config.
+	buyOffset, err := decimal.NewFromString(cfg.BuyOffset)
+	if err != nil {
+		log.Fatalf("invalid BUY_OFFSET %q: %v", cfg.BuyOffset, err)
+	}
+	buyQuantityUSDC, err := decimal.NewFromString(cfg.BuyQuantityUSDC)
+	if err != nil {
+		log.Fatalf("invalid BUY_QUANTITY_USDC %q: %v", cfg.BuyQuantityUSDC, err)
+	}
+	takeProfit, err := decimal.NewFromString(cfg.TakeProfit)
+	if err != nil {
+		log.Fatalf("invalid TAKE_PROFIT %q: %v", cfg.TakeProfit, err)
+	}
+	orderExpiry, err := time.ParseDuration(cfg.OrderExpiry)
+	if err != nil {
+		log.Fatalf("invalid ORDER_EXPIRY %q: %v", cfg.OrderExpiry, err)
+	}
+
 	// Create service
 	svc, err := service.New(ctx, binanceClient, storageClient, service.Config{
-		Pairs:  pairs,
-		DryRun: cfg.DryRun,
+		Pairs:           pairs,
+		DryRun:          cfg.DryRun,
+		BuyOffset:       buyOffset,
+		BuyQuantityUSDC: buyQuantityUSDC,
+		TakeProfit:      takeProfit,
+		OrderExpiry:     orderExpiry,
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize service: %v", err)
@@ -183,11 +210,11 @@ func main() {
 }
 
 // parsePairs parses and validates a comma-separated list of trading pairs.
-// Input format: "BTC/USDC,ETH/USDC" → Output: ["BTCUSDC", "ETHUSDC"]
-func parsePairs(raw string) ([]string, error) {
+// Input format: "BTC/USDC,ETH/USDC" → Output: []PairConfig
+func parsePairs(raw string) ([]service.PairConfig, error) {
 	parts := strings.Split(raw, ",")
 	seen := make(map[string]bool, len(parts))
-	pairs := make([]string, 0, len(parts))
+	pairs := make([]service.PairConfig, 0, len(parts))
 
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
@@ -212,7 +239,11 @@ func parsePairs(raw string) ([]string, error) {
 			continue // deduplicate
 		}
 		seen[symbol] = true
-		pairs = append(pairs, symbol)
+		pairs = append(pairs, service.PairConfig{
+			Symbol: symbol,
+			Base:   base,
+			Quote:  quote,
+		})
 	}
 
 	if len(pairs) == 0 {
