@@ -66,17 +66,8 @@ func (s *Service) processPair(l *slog.Logger, pair PairConfig) {
 	case hasPosition && hasOpenSell:
 		pl.Debug("Position open, sell order active — waiting")
 	case hasPosition && !hasOpenSell:
-		threshold := pos.EntryPrice.Mul(decimal.NewFromInt(1).Add(s.cfg.TakeProfit))
-		if marketPrice.GreaterThanOrEqual(threshold) {
-			pl.Info("Market crossed take-profit, selling",
-				"market", marketPrice, "threshold", threshold, "entry", pos.EntryPrice,
-			)
-			s.placeSellOrder(pl, pair, &pos, marketPrice, filters)
-		} else {
-			pl.Debug("Holding position, below take-profit",
-				"market", marketPrice, "threshold", threshold, "entry", pos.EntryPrice,
-			)
-		}
+		pl.Info("Position open, no sell order — placing take-profit sell")
+		s.placeSellOrder(pl, pair, &pos, filters)
 	case !hasPosition && hasOpenBuy:
 		pl.Debug("No position, buy order active — waiting")
 	case !hasPosition && !hasOpenBuy:
@@ -114,10 +105,13 @@ func (s *Service) ensureFilters(l *slog.Logger, symbol string) (*SymbolFilters, 
 		f.MaxPrice, _ = decimal.NewFromString(price.MaxPrice)
 		f.TickSize, _ = decimal.NewFromString(price.TickSize)
 	}
+	if notional := sym.NotionalFilter(); notional != nil {
+		f.MinNotional, _ = decimal.NewFromString(notional.MinNotional)
+	}
 
 	l.Info("Symbol filters cached",
 		"min_qty", f.MinQty, "step_size", f.StepSize,
-		"tick_size", f.TickSize,
+		"tick_size", f.TickSize, "min_notional", f.MinNotional,
 	)
 
 	s.symbolFilters[symbol] = f
@@ -277,6 +271,19 @@ func (s *Service) placeBuyOrder(l *slog.Logger, pair PairConfig, marketPrice dec
 		return
 	}
 
+	// Ensure notional (price × qty) meets exchange minimum.
+	if filters.MinNotional.IsPositive() {
+		notional := price.Mul(qty)
+		if notional.LessThan(filters.MinNotional) {
+			// Round qty up to meet min notional.
+			minQty := filters.MinNotional.Div(price)
+			qty = roundUpToStepSize(minQty, filters.StepSize)
+			l.Info("Adjusted quantity to meet min notional",
+				"notional", price.Mul(qty), "min_notional", filters.MinNotional, "qty", qty,
+			)
+		}
+	}
+
 	l.Info("Placing buy order",
 		"price", price, "qty", qty, "market", marketPrice,
 	)
@@ -299,13 +306,14 @@ func (s *Service) placeBuyOrder(l *slog.Logger, pair PairConfig, marketPrice dec
 		return
 	}
 
+	execQty, _ := decimal.NewFromString(resp.ExecutedQuantity)
 	rec := &OrderRecord{
 		Symbol:           pair.Symbol,
 		OrderID:          resp.OrderID,
 		Side:             string(binance.SideTypeBuy),
 		Price:            price,
 		Quantity:         qty,
-		ExecutedQuantity: decimal.Zero,
+		ExecutedQuantity: execQty,
 		Status:           string(resp.Status),
 		CreatedAt:        time.Now(),
 		UpdatedAt:        time.Now(),
@@ -313,11 +321,20 @@ func (s *Service) placeBuyOrder(l *slog.Logger, pair PairConfig, marketPrice dec
 	s.saveOrder(l, rec)
 
 	l.Info("Buy order placed", "order_id", resp.OrderID, "status", resp.Status)
+
+	// If the limit buy filled immediately, create the position now
+	// so the sell can be placed in the same tick.
+	if resp.Status == binance.OrderStatusTypeFilled {
+		s.handleFill(l, pair, rec)
+	}
 }
 
-// placeSellOrder places a market sell. Called only after confirming market
-// price has crossed the take-profit threshold.
-func (s *Service) placeSellOrder(l *slog.Logger, pair PairConfig, pos *Position, marketPrice decimal.Decimal, filters *SymbolFilters) {
+// placeSellOrder places a GTC limit sell at the take-profit price.
+// Binance handles matching — we just park the order on the book.
+func (s *Service) placeSellOrder(l *slog.Logger, pair PairConfig, pos *Position, filters *SymbolFilters) {
+	price := pos.EntryPrice.Mul(decimal.NewFromInt(1).Add(s.cfg.TakeProfit))
+	price = roundToTickSize(price, filters.TickSize)
+
 	qty := roundToStepSize(pos.Quantity, filters.StepSize)
 
 	if qty.LessThan(filters.MinQty) {
@@ -327,32 +344,20 @@ func (s *Service) placeSellOrder(l *slog.Logger, pair PairConfig, pos *Position,
 		return
 	}
 
-	l.Info("Placing market sell",
-		"qty", qty, "market", marketPrice, "entry_price", pos.EntryPrice,
+	l.Info("Placing sell order",
+		"price", price, "qty", qty, "entry_price", pos.EntryPrice,
 	)
 
 	if s.cfg.DryRun {
-		l.Info("[DRY RUN] Would place market sell", "qty", qty, "market", marketPrice)
-		rec := &OrderRecord{
-			Symbol:           pair.Symbol,
-			OrderID:          time.Now().UnixMilli(),
-			Side:             string(binance.SideTypeSell),
-			Price:            marketPrice,
-			Quantity:         qty,
-			ExecutedQuantity: qty,
-			Status:           string(binance.OrderStatusTypeFilled),
-			CreatedAt:        time.Now(),
-			UpdatedAt:        time.Now(),
-		}
-		s.saveOrder(l, rec)
-		if err := s.db.Delete(s.ctx, tablePositions, pair.Symbol); err != nil && !errors.Is(err, storage.ErrNotFound) {
-			l.Error("Failed to delete position after dry-run sell", "error", err)
-		}
+		l.Info("[DRY RUN] Would place sell order", "price", price, "qty", qty)
+		s.saveDryRunOrder(l, pair.Symbol, binance.SideTypeSell, price, qty)
 		return
 	}
 
-	resp, err := s.exchange.CreateOrder(s.ctx, pair.Symbol, binance.SideTypeSell, binance.OrderTypeMarket,
+	resp, err := s.exchange.CreateOrder(s.ctx, pair.Symbol, binance.SideTypeSell, binance.OrderTypeLimit,
 		func(svc *binance.CreateOrderService) {
+			svc.TimeInForce(binance.TimeInForceTypeGTC)
+			svc.Price(price.String())
 			svc.Quantity(qty.String())
 		},
 	)
@@ -366,7 +371,7 @@ func (s *Service) placeSellOrder(l *slog.Logger, pair PairConfig, pos *Position,
 		Symbol:           pair.Symbol,
 		OrderID:          resp.OrderID,
 		Side:             string(binance.SideTypeSell),
-		Price:            marketPrice,
+		Price:            price,
 		Quantity:         qty,
 		ExecutedQuantity: execQty,
 		Status:           string(resp.Status),
@@ -375,17 +380,17 @@ func (s *Service) placeSellOrder(l *slog.Logger, pair PairConfig, pos *Position,
 	}
 	s.saveOrder(l, rec)
 
-	l.Info("Sell order placed", "order_id", resp.OrderID, "status", resp.Status, "executed_qty", execQty)
+	l.Info("Sell order placed", "order_id", resp.OrderID, "status", resp.Status)
 
-	// Market orders typically fill immediately. Clean up position now.
+	// If the limit sell filled immediately (market was already above our price),
+	// delete the position now rather than waiting for syncOrders next tick.
 	if resp.Status == binance.OrderStatusTypeFilled {
 		if err := s.db.Delete(s.ctx, tablePositions, pair.Symbol); err != nil && !errors.Is(err, storage.ErrNotFound) {
-			l.Error("Failed to delete position after sell fill", "error", err)
+			l.Error("Failed to delete position after immediate sell fill", "error", err)
 		} else {
-			l.Info("Position closed", "qty", execQty)
+			l.Info("Position closed (immediate fill)", "qty", execQty, "price", price)
 		}
 	}
-	// If not filled immediately (unlikely for market), syncOrders handles it next tick.
 }
 
 // saveDryRunOrder saves a simulated order record for dry-run mode tracking.
@@ -463,5 +468,13 @@ func roundToStepSize(qty, stepSize decimal.Decimal) decimal.Decimal {
 		return qty
 	}
 	return qty.Div(stepSize).Floor().Mul(stepSize)
+}
+
+// roundUpToStepSize ceils a quantity to the nearest step size.
+func roundUpToStepSize(qty, stepSize decimal.Decimal) decimal.Decimal {
+	if stepSize.IsZero() {
+		return qty
+	}
+	return qty.Div(stepSize).Ceil().Mul(stepSize)
 }
 

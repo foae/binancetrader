@@ -40,10 +40,11 @@ type Position struct {
 
 // SymbolFilters holds cached exchange info for lot/price rounding.
 type SymbolFilters struct {
-	MinQty   decimal.Decimal
-	MaxQty   decimal.Decimal
-	StepSize decimal.Decimal
-	MinPrice decimal.Decimal
-	MaxPrice decimal.Decimal
-	TickSize decimal.Decimal
+	MinQty      decimal.Decimal
+	MaxQty      decimal.Decimal
+	StepSize    decimal.Decimal
+	MinPrice    decimal.Decimal
+	MaxPrice    decimal.Decimal
+	TickSize    decimal.Decimal
+	MinNotional decimal.Decimal
 }
