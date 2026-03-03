@@ -70,7 +70,7 @@ func (c *Client) ServerTime(ctx context.Context) (time.Time, error) {
 	return time.UnixMilli(ms), nil
 }
 
-// TickerPrice returns the latest price for a symbol (e.g., "BTCUSDC").
+// TickerPrice returns the latest price for a symbol (e.g., "BTCUSDT").
 // Returns the price as a string to preserve decimal precision.
 func (c *Client) TickerPrice(ctx context.Context, symbol string) (string, error) {
 	prices, err := c.spot.NewListPricesService().Symbol(symbol).Do(ctx)
@@ -103,7 +103,7 @@ func (c *Client) Account(ctx context.Context) (*binance.Account, error) {
 // CreateOrder places a new spot order. Use the configure callback to set
 // quantity, price, time-in-force, etc. via the go-binance builder:
 //
-//	resp, err := client.CreateOrder(ctx, "BTCUSDC", binance.SideTypeBuy,
+//	resp, err := client.CreateOrder(ctx, "BTCUSDT", binance.SideTypeBuy,
 //	    binance.OrderTypeLimit, func(s *binance.CreateOrderService) {
 //	        s.TimeInForce(binance.TimeInForceTypeGTC)
 //	        s.Quantity("0.001")

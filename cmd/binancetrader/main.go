@@ -45,10 +45,10 @@ type config struct {
 	BinanceMode string `env:"BINANCE_MODE" envDefault:"live"`
 
 	// Trading
-	EnabledPairs    string `env:"ENABLED_PAIRS,required" envDefault:"BTC/USDC"`
+	EnabledPairs    string `env:"ENABLED_PAIRS,required" envDefault:"BTC/USDT"`
 	DryRun          bool   `env:"DRY_RUN" envDefault:"true"`
 	BuyOffset       string `env:"BUY_OFFSET" envDefault:"0.001"`
-	BuyQuantityUSDC string `env:"BUY_QUANTITY_USDC" envDefault:"5"`
+	BuyQuantityUSDT string `env:"BUY_QUANTITY_USDT" envDefault:"5"`
 	TakeProfit      string `env:"TAKE_PROFIT" envDefault:"0.01"`
 	OrderExpiry     string `env:"ORDER_EXPIRY" envDefault:"1h"`
 }
@@ -129,9 +129,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid BUY_OFFSET %q: %v", cfg.BuyOffset, err)
 	}
-	buyQuantityUSDC, err := decimal.NewFromString(cfg.BuyQuantityUSDC)
+	buyQuantityUSDT, err := decimal.NewFromString(cfg.BuyQuantityUSDT)
 	if err != nil {
-		log.Fatalf("invalid BUY_QUANTITY_USDC %q: %v", cfg.BuyQuantityUSDC, err)
+		log.Fatalf("invalid BUY_QUANTITY_USDT %q: %v", cfg.BuyQuantityUSDT, err)
 	}
 	takeProfit, err := decimal.NewFromString(cfg.TakeProfit)
 	if err != nil {
@@ -147,7 +147,7 @@ func main() {
 		Pairs:           pairs,
 		DryRun:          cfg.DryRun,
 		BuyOffset:       buyOffset,
-		BuyQuantityUSDC: buyQuantityUSDC,
+		BuyQuantityUSDT: buyQuantityUSDT,
 		TakeProfit:      takeProfit,
 		OrderExpiry:     orderExpiry,
 	})
@@ -210,7 +210,7 @@ func main() {
 }
 
 // parsePairs parses and validates a comma-separated list of trading pairs.
-// Input format: "BTC/USDC,ETH/USDC" → Output: []PairConfig
+// Input format: "BTC/USDT,ETH/USDT" → Output: []PairConfig
 func parsePairs(raw string) ([]service.PairConfig, error) {
 	parts := strings.Split(raw, ",")
 	seen := make(map[string]bool, len(parts))
@@ -224,7 +224,7 @@ func parsePairs(raw string) ([]service.PairConfig, error) {
 
 		base, quote, ok := strings.Cut(p, "/")
 		if !ok {
-			return nil, fmt.Errorf("invalid pair format %q — expected BASE/QUOTE (e.g., BTC/USDC)", p)
+			return nil, fmt.Errorf("invalid pair format %q — expected BASE/QUOTE (e.g., BTC/USDT)", p)
 		}
 
 		base = strings.TrimSpace(strings.ToUpper(base))

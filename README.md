@@ -14,3 +14,8 @@ make run-docker       # Build and run in Docker (host networking)
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your values. The `.env` file is gitignored and must never be committed.
+
+## Docs
+
+- [Fee Analysis & Scalping Config Guide](docs/fee-analysis.md) — Binance fee breakdown, breakeven calculations, and config presets for different aggressiveness levels.
+- [Scalping Strategy & Drawdown Management](docs/scalping-strategy.md) — Volatility analysis, tiered drawdown response, and capital budgeting for underwater positions.

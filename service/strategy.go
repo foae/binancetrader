@@ -260,8 +260,8 @@ func (s *Service) placeBuyOrder(l *slog.Logger, pair PairConfig, marketPrice dec
 		return
 	}
 
-	// Qty = BUY_QUANTITY_USDC / price
-	qty := s.cfg.BuyQuantityUSDC.Div(price)
+	// Qty = BUY_QUANTITY_USDT / price
+	qty := s.cfg.BuyQuantityUSDT.Div(price)
 	qty = roundToStepSize(qty, filters.StepSize)
 
 	if qty.LessThan(filters.MinQty) {
@@ -477,4 +477,3 @@ func roundUpToStepSize(qty, stepSize decimal.Decimal) decimal.Decimal {
 	}
 	return qty.Div(stepSize).Ceil().Mul(stepSize)
 }
-

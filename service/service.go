@@ -47,12 +47,12 @@ type storageClient interface {
 
 // Config holds service configuration.
 type Config struct {
-	Pairs          []PairConfig
-	DryRun         bool
-	BuyOffset      decimal.Decimal // How far below market to place buy (e.g. 0.001 = 0.1%)
-	BuyQuantityUSDC decimal.Decimal // USDC amount per buy order
-	TakeProfit     decimal.Decimal // Sell target above entry (e.g. 0.01 = 1%)
-	OrderExpiry    time.Duration   // Cancel open orders older than this
+	Pairs           []PairConfig
+	DryRun          bool
+	BuyOffset       decimal.Decimal // How far below market to place buy (e.g. 0.001 = 0.1%)
+	BuyQuantityUSDT decimal.Decimal // USDT amount per buy order
+	TakeProfit      decimal.Decimal // Sell target above entry (e.g. 0.01 = 1%)
+	OrderExpiry     time.Duration   // Cancel open orders older than this
 }
 
 // Service is the single orchestrator that runs the main trading loop

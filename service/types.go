@@ -8,9 +8,9 @@ import (
 
 // PairConfig holds the parsed representation of a trading pair.
 type PairConfig struct {
-	Symbol string // Binance symbol: "BTCUSDC"
+	Symbol string // Binance symbol: "BTCUSDT"
 	Base   string // Base asset: "BTC"
-	Quote  string // Quote asset: "USDC"
+	Quote  string // Quote asset: "USDT"
 }
 
 // OrderRecord is a local mirror of a Binance order, stored in Redis.

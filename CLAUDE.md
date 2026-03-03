@@ -26,7 +26,7 @@ go test -race -run TestName ./service/...
 ```
 cmd/binancetrader/main.go  →  Entry point, config loading, HTTP server (Chi on :8123)
                                Routes: /health, /ready, /metrics
-                               Parses ENABLED_PAIRS (BTC/USDC → BTCUSDC), creates
+                               Parses ENABLED_PAIRS (BTC/USDT → BTCUSDT), creates
                                Binance client, single Service for all pairs
 
 exchange/binance.go        →  Binance spot client (wraps github.com/adshao/go-binance/v2)
@@ -84,12 +84,17 @@ Environment variables loaded from `.env` (see `.env.example`). Key vars:
 - `REDIS_URL`: DragonFly/Redis connection string
 - `BINANCE_API_KEY` / `BINANCE_API_SECRET`: Binance API credentials
 - `BINANCE_MODE`: `live`, `demo`, or `testnet`
-- `ENABLED_PAIRS`: Comma-separated trading pairs, format `BASE/QUOTE` (e.g., `BTC/USDC,ETH/USDC`)
+- `ENABLED_PAIRS`: Comma-separated trading pairs, format `BASE/QUOTE` (e.g., `BTC/USDT,ETH/USDT`)
 - `DRY_RUN`: `true` (default) disables real order placement
 - `BUY_OFFSET`: Decimal, how far below market to buy (default `0.001` = 0.1%)
-- `BUY_QUANTITY_USDC`: Decimal, USDC amount per buy order (default `5`)
+- `BUY_QUANTITY_USDT`: Decimal, USDT amount per buy order (default `5`)
 - `TAKE_PROFIT`: Decimal, sell target above entry (default `0.01` = 1%)
 - `ORDER_EXPIRY`: Go duration, cancel stale GTC orders (default `1h`)
+
+## Docs
+
+- [docs/fee-analysis.md](docs/fee-analysis.md) — Binance fee breakdown, breakeven math, config presets for scalping profitability
+- [docs/scalping-strategy.md](docs/scalping-strategy.md) — Volatility analysis, tiered drawdown response (re-anchor / park), capital budgeting
 
 ## Testing Patterns
 
