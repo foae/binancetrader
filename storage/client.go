@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/redis/go-redis/v9"
 )
 
-var (
-	ErrNotFound = errors.New("not found")
-)
+var ErrNotFound = errors.New("not found")
 
 type Client struct {
 	rdb *redis.Client
@@ -119,13 +116,19 @@ func (c *Client) List(ctx context.Context, table string, factory func() any) ([]
 	pattern := BuildKey(table, "*")
 
 	var keys []string
+	seen := make(map[string]bool)
 	var cursor uint64
 	for {
 		batch, nextCursor, err := c.rdb.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan keys for table %s: %w", table, err)
 		}
-		keys = append(keys, batch...)
+		for _, key := range batch {
+			if !seen[key] {
+				seen[key] = true
+				keys = append(keys, key)
+			}
+		}
 		cursor = nextCursor
 		if cursor == 0 {
 			break
@@ -142,20 +145,19 @@ func (c *Client) List(ctx context.Context, table string, factory func() any) ([]
 	}
 
 	results := make([]any, 0, len(values))
-	for _, v := range values {
+	for i, v := range values {
 		if v == nil {
-			continue
+			return nil, fmt.Errorf("record disappeared during scan: %s", keys[i])
 		}
 
 		data, ok := v.(string)
 		if !ok {
-			continue
+			return nil, fmt.Errorf("unexpected value type in table %s", table)
 		}
 
 		dest := factory()
 		if err := json.Unmarshal([]byte(data), dest); err != nil {
-			slog.Error("Corrupt record in storage, skipping", "table", table, "error", err)
-			continue
+			return nil, fmt.Errorf("corrupt record in table %s: %w", table, err)
 		}
 
 		results = append(results, dest)

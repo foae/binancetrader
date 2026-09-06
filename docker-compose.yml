@@ -1,43 +1,35 @@
 services:
-  dragonfly:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
-    container_name: binancetrader-dragonfly
+  redis:
+    image: redis:8-alpine
     restart: unless-stopped
+    command: [redis-server, --appendonly, "yes", --appendfsync, always]
     volumes:
-      - binancetrader_dragonfly_data:/data
-    command: >
-      dragonfly
-      --dir=/data
-      --bind=0.0.0.0
-      --port=6379
-      --logtostderr
-    networks:
-      - binancetrader-net
+      - binancetrader_redis_data:/data
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   app:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: binancetrader-app
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     restart: unless-stopped
     env_file: .env
     environment:
-      - REDIS_URL=redis://dragonfly:6379/0
-      - HTTP_LISTEN_ADDRESS=0.0.0.0:8123
-    networks:
-      - binancetrader-net
+      REDIS_URL: redis://redis:6379/0
+      HTTP_LISTEN_ADDRESS: 0.0.0.0:8123
+      LOG_FILE: "-"
     ports:
-      - "8123:8123"
+      - "127.0.0.1:8123:8123"
     depends_on:
-      - dragonfly
-
-networks:
-  binancetrader-net:
-    name: binancetrader-net
-    driver: bridge
+      redis:
+        condition: service_healthy
 
 volumes:
-  binancetrader_dragonfly_data:
-    driver: local
+  binancetrader_redis_data:

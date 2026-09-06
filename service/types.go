@@ -18,10 +18,12 @@ type PairConfig struct {
 type OrderRecord struct {
 	Symbol           string          `json:"symbol"`
 	OrderID          int64           `json:"order_id"`
+	ClientOrderID    string          `json:"client_order_id"`
 	Side             string          `json:"side"` // "BUY" or "SELL"
 	Price            decimal.Decimal `json:"price"`
 	Quantity         decimal.Decimal `json:"quantity"`
 	ExecutedQuantity decimal.Decimal `json:"executed_quantity"`
+	QuoteQuantity    decimal.Decimal `json:"quote_quantity"`
 	Status           string          `json:"status"` // "NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", etc.
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`

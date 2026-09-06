@@ -1,48 +1,25 @@
-SERVICE_NAME := binancetrader
-IMAGE_NAME = github.com/foae/binancetrader
-VERSION := latest
-GIT_COMMIT_SHA = $(shell git describe --tags --always --dirty)
-BUILD_ARGS := --build-arg GIT_COMMIT=$(shell git show -s --format=%H) \
-	--build-arg APP_VERSION="$(shell git log -1 --date=format:%Y%m%d%H%M%S --format=%cd-%h)" \
-	--build-arg GIT_COMMIT_DATE="$(shell git show -s --format=%ci)" \
-	--build-arg BUILD_DATE=$(shell date +"%s") \
-	--build-arg HOST_MACHINE="$(shell hostname)" \
-	--build-arg IMAGE_NAME="$(IMAGE_NAME)"
+IMAGE_NAME ?= binancetrader
+VERSION := $(shell cat VERSION)
+GIT_COMMIT := $(shell git rev-parse HEAD)
 
-.PHONY: clean-logs
-clean-logs:
-	cat /dev/null > ./binancetrader.log
-	printf "\n=== Cleaned up binancetrader.log file\n"
-
-.PHONY: run
+.PHONY: run test build build-docker run-docker release
 run:
-	go run -race ./cmd/binancetrader/main.go
+	go run -race ./cmd/binancetrader
 
-.PHONY: run-logged
-run-logged: clean-logs
-	go run -race ./cmd/binancetrader/main.go >> binancetrader.log 2>&1
-
-.PHONY: test
 test:
-	go fmt ./...
+	@test -z "$$(gofmt -l cmd exchange service storage)" || { echo "Run gofmt on the listed source directories"; exit 1; }
 	go vet ./...
 	go test -race ./...
 
-.PHONY: docker-build
+build:
+	go build -trimpath -o binancetrader ./cmd/binancetrader
+
 build-docker:
-	docker buildx build \
-		--cache-to type=inline \
-		--load \
-		$(BUILD_ARGS) \
-		-f Dockerfile \
-		-t $(IMAGE_NAME):$(VERSION) .
+	docker build --build-arg APP_VERSION="$(VERSION)" --build-arg GIT_COMMIT="$(GIT_COMMIT)" -t $(IMAGE_NAME):$(VERSION) .
 
-.PHONY: docker-run
-run-docker: docker-build
-	@echo "Starting $(SERVICE_NAME) in Docker..."
-	docker run -it --rm \
-		--name $(SERVICE_NAME) \
-		--network=host \
-		$(shell test -f .env && echo "--env-file .env") \
-		$(IMAGE_NAME):$(VERSION)
+run-docker:
+	docker compose up --build
 
+# Example: make release RELEASE_VERSION=1.0.1 RELEASE_NAME="Reconciliation fixes" RELEASE_NOTES=release-notes.md
+release:
+	bash scripts/release.sh "$(RELEASE_VERSION)" "$(RELEASE_NAME)" "$(RELEASE_NOTES)"

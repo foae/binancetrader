@@ -17,6 +17,8 @@ go.work
 .env
 .env.*
 !.env.example
+.private/
+/vendor/
 
 # Python virtual environment
 .venv/
@@ -29,6 +31,10 @@ __pycache__/
 *.db-wal
 *.db-shm
 data.sqlite
+*.duckdb
+*.duckdb.wal
+/prediction-markets-archive/data/
+/prediction-markets-archive/db/
 
 # IDE
 .idea/

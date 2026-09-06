@@ -1,1 +1,11 @@
-data/
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!exchange/
+!exchange/**
+!service/
+!service/**
+!storage/
+!storage/**

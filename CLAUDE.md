@@ -1,101 +1,51 @@
-# CLAUDE.md
+# Repository development guide
 
-This file provides guidance when working with code in this repository.
+## Purpose and layout
 
-## Project Overview
+A single Go service runs the Binance spot buy-low/sell-high strategy across configured pairs. `cmd/binancetrader` loads configuration and serves `/health`, `/ready`, and `/metrics`; `exchange` wraps the Binance SDK; `service` manages reconciliation and order placement; `storage` persists JSON in Redis. `prediction-markets-archive` contains independent public-data utilities, not trading inputs.
 
-binancetrader is an automated trading bot for Binance. A single service orchestrates all configured trading pairs with a 1-minute main loop, debounced by async events (websocket, webhooks). Strategy: buy-low/sell-high — place GTC limit buys below market, sell at take-profit. Orders have manual expiry management (Binance spot has no GTT).
+## Commands
 
-## Build & Development Commands
-
-```bash
-make run              # Run locally with race detector
-make test             # fmt + vet + race-detector tests
-make build-docker     # Build Docker image
-make run-docker       # Build and run in Docker (host networking)
+```sh
+make run           # local application with race detector; requires configured .env and Redis
+make test          # formatting check, vet, race-detector regression tests
+make build         # compile packages
+make build-docker  # non-root image with VERSION and Git revision labels
+make run-docker    # Linux host networking, configured .env and external Redis
 ```
 
-Run a single test:
-```bash
-go test -race -run TestName ./service/...
-```
+Use Go modules, not a committed vendor directory. Update `go.mod` and `go.sum` together. Go 1.26 is the minimum toolchain; CI reads it from `go.mod`.
 
+## Trading invariants
 
-## Architecture
+- One process owns each account/managed symbol set and dedicated durable Redis database. No replicas or external ledger mutations.
+- Persist `intents:{symbol}` before submitting to Binance with a unique client order ID. Recover by that ID; never automatically resubmit an uncertain order.
+- `orders:{symbol}:{orderID}` stores cumulative executed base and quote amounts. Replay snapshots in order to derive average-cost inventory. `positions:{symbol}` is only a derived cache.
+- Any active order blocks further placement on that symbol, including partially filled buys. Unmanaged exchange orders block buys and sells.
+- Reconcile expiry cancellation against final exchange state before deriving inventory. Partial sells must preserve unsold inventory.
+- Malformed state, storage errors, unexpected statuses, and uncertain exchange outcomes pause trading. Never turn an error into an empty order set.
+- Startup rejects unversioned legacy trading state and database/account/environment mismatches. Never bypass these guards to make startup succeed. See README recovery instructions.
+- Dry-run only previews buy intentions: no order endpoints, synthetic orders, or trading-state writes. Startup still requires authenticated API access and Redis.
+- Use decimal arithmetic; floor price and quantity to exchange increments. Never increase the configured budget to satisfy a minimum.
+- Fees are not deducted from tracked inventory. Base-asset commissions, dust, and insufficient balances can require manual reconciliation; do not claim production trading safety.
 
-```
-cmd/binancetrader/main.go  →  Entry point, config loading, HTTP server (Chi on :8123)
-                               Routes: /health, /ready, /metrics
-                               Parses ENABLED_PAIRS (BTC/USDT → BTCUSDT), creates
-                               Binance client, single Service for all pairs
+The exchange SDK exposes `Spot()` for metadata and client-ID recovery. Websocket transport is not implemented. Strategy research in `docs/` is not necessarily implemented behavior.
 
-exchange/binance.go        →  Binance spot client (wraps github.com/adshao/go-binance/v2)
-                               - Public: Ping, ServerTime, TickerPrice, Klines
-                               - Authenticated: Account, CreateOrder, GetOrder,
-                                 CancelOrder, ListOpenOrders
-                               - Spot() exposes underlying go-binance client
-                               - WithTestnet() option for testnet keys
-                               - WebSocket intentionally excluded (go-binance#800
-                                 data race); will build our own WS layer later
+## Verification
 
-service/service.go         →  Single orchestrator for all configured pairs
-                               - 1-minute ticker triggers main loop
-                               - triggerCh (buffered 16) for async events
-                               - Async events reset ticker (debounce)
-                               - Inject() method for external event sources
-                               - tick() iterates all pairs, processPair() per pair
-                               - exchangeClient interface: Ping, TickerPrice,
-                                 CreateOrder, GetOrder, CancelOrder, ListOpenOrders, Spot
-                               - storageClient interface: Close, Set, Get, Delete, List
+Service regression tests exercise the real SDK against a loopback HTTP fixture, never live trading credentials. Keep tests deterministic and isolated. Reproduce reconciliation bugs before fixing them; validate failure/recovery transitions and inventory rather than internal wiring. `make test` must pass, as must the Docker build and CI on the intended release commit.
 
-service/types.go           →  Domain types
-                               - PairConfig{Symbol, Base, Quote}
-                               - OrderRecord — local mirror of Binance order
-                                 Key: orders:{symbol}:{orderID}
-                               - Position — inventory per symbol (one max)
-                                 Key: positions:{symbol}
-                               - SymbolFilters — cached lot/price filter params
-                               - All financial fields use shopspring/decimal
+Keep `.env`, `.private/`, database dumps, local logs, and generated archive data out of Git and Docker contexts. Never add credentials, personal infrastructure, or authorship/co-author credits for development tools.
 
-service/strategy.go        →  Buy-low/sell-high strategy
-                               - processPair(): fetch price → syncOrders →
-                                 checkExpiredOrders → evaluate state → place order
-                               - syncOrders(): reconcile DB vs Binance open orders,
-                                 handle fills (create/delete positions)
-                               - placeBuyOrder(): market × (1-BUY_OFFSET), GTC limit
-                               - placeSellOrder(): entry × (1+TAKE_PROFIT), GTC limit
-                               - checkExpiredOrders(): cancel GTC > ORDER_EXPIRY
-                               - Symbol filters cached per symbol (via Spot() escape hatch),
-                                 includes MinNotional validation
-                               - Immediate fills handled inline (no wait for next tick)
-                               - DRY_RUN: logs intent, saves synthetic order records
-                               - Rounding: roundToTickSize, roundToStepSize (floor)
+## Required release workflow
 
-storage/client.go          →  Generic Redis/DragonFly JSON store
-                               - Key scheme: {table}:{id}
-                               - CRUD: Set, Get, Delete, Exists, List
-                               - Reusable for any record type
-```
+Every shipped change must be versioned, tagged, and named in a GitHub release. Use stable SemVer: patch for fixes/documentation, minor for compatible additions, major for breaking changes. `VERSION` is the source of truth for package releases and Makefile image labels; independently versioned dependencies retain their own versions.
 
-## Configuration
+1. Make and verify the change; update README/config examples when behavior changes.
+2. Commit the change on `main` using the maintainer's intended public Git identity.
+3. Write accurate release notes in `.private/` or outside the repository, including compatibility changes, verification, and remaining risks.
+4. Run `make release RELEASE_VERSION=X.Y.Z RELEASE_NAME="Descriptive release name" RELEASE_NOTES=.private/release-notes.md`.
+5. `scripts/release.sh` bumps/commits `VERSION`, pushes `main`, waits for successful CI on that exact SHA, verifies remote `main`, then creates and pushes an annotated `vX.Y.Z` tag and publishes a stable, non-draft release using `gh`.
+6. Verify the published release and tag target. If a tag or release already exists, stop and investigate; never move it silently. A failure after tag push requires manual release completion, not retagging.
 
-Environment variables loaded from `.env` (see `.env.example`). Key vars:
-- `ENV_MODE`: `dev` (DEBUG logs) or `prod` (INFO logs)
-- `REDIS_URL`: DragonFly/Redis connection string
-- `BINANCE_API_KEY` / `BINANCE_API_SECRET`: Binance API credentials
-- `BINANCE_MODE`: `live`, `demo`, or `testnet`
-- `ENABLED_PAIRS`: Comma-separated trading pairs, format `BASE/QUOTE` (e.g., `BTC/USDT,ETH/USDT`)
-- `DRY_RUN`: `true` (default) disables real order placement
-- `BUY_OFFSET`: Decimal, how far below market to buy (default `0.001` = 0.1%)
-- `BUY_QUANTITY_USDT`: Decimal, USDT amount per buy order (default `5`)
-- `TAKE_PROFIT`: Decimal, sell target above entry (default `0.01` = 1%)
-- `ORDER_EXPIRY`: Go duration, cancel stale GTC orders (default `1h`)
-
-## Docs
-
-- [docs/fee-analysis.md](docs/fee-analysis.md) — Binance fee breakdown, breakeven math, config presets for scalping profitability
-- [docs/scalping-strategy.md](docs/scalping-strategy.md) — Volatility analysis, tiered drawdown response (re-anchor / park), capital budgeting
-
-## Testing Patterns
-
-Tests use table-driven style. Service tests should use interface mocks for the exchange client and storage layer.
+No release should precede successful CI on its exact commit. The workflow does not change repository visibility.

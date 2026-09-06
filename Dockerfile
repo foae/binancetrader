@@ -1,33 +1,27 @@
-FROM golang:1.26.0-alpine AS builder
-
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GO111MODULE=on
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
-
-# Copy go.mod and go.sum first (cached layer unless dependencies change)
 COPY go.mod go.sum ./
-
-# Download dependencies (cached layer)
 RUN go mod download
+COPY cmd/ cmd/
+COPY exchange/ exchange/
+COPY service/ service/
+COPY storage/ storage/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /bin/binancetrader ./cmd/binancetrader
 
-# Copy source code (this layer changes frequently)
-COPY . .
-
-# Build the binancetrader service
-RUN go build -ldflags="-s -w" -o binancetrader ./cmd/binancetrader
-
-# Slim final image
-FROM alpine:latest
-
-EXPOSE 8123
-
-COPY --from=builder /build/binancetrader /usr/bin/
-
-RUN addgroup -S binancetrader && \
-    adduser -S -G binancetrader -s /sbin/nologin binancetrader && \
-    chmod +x /usr/bin/binancetrader
-
+FROM alpine:3.24
+RUN apk add --no-cache ca-certificates && \
+    addgroup -S binancetrader && \
+    adduser -S -G binancetrader binancetrader
+COPY --from=builder /bin/binancetrader /usr/local/bin/binancetrader
 USER binancetrader
-
-ENTRYPOINT ["/usr/bin/binancetrader"]
-
+ENV LOG_FILE="-"
+EXPOSE 8123
+ARG APP_VERSION=dev
+ARG GIT_COMMIT=unknown
+LABEL org.opencontainers.image.title="binancetrader" \
+      org.opencontainers.image.description="Binance spot trading bot and prediction-market archive utilities" \
+      org.opencontainers.image.source="https://github.com/foae/binancetrader" \
+      org.opencontainers.image.version="$APP_VERSION" \
+      org.opencontainers.image.revision="$GIT_COMMIT"
+ENTRYPOINT ["/usr/local/bin/binancetrader"]

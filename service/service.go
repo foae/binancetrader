@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	binance "github.com/adshao/go-binance/v2"
+	"github.com/foae/binancetrader/storage"
 	"github.com/shopspring/decimal"
 )
 
@@ -49,6 +51,7 @@ type storageClient interface {
 type Config struct {
 	Pairs           []PairConfig
 	DryRun          bool
+	StateID         string          // Account-key/environment fingerprint; never a credential.
 	BuyOffset       decimal.Decimal // How far below market to place buy (e.g. 0.001 = 0.1%)
 	BuyQuantityUSDT decimal.Decimal // USDT amount per buy order
 	TakeProfit      decimal.Decimal // Sell target above entry (e.g. 0.01 = 1%)
@@ -83,10 +86,48 @@ func New(ctx context.Context, exchange exchangeClient, db storageClient, cfg Con
 		log:           slog.With("component", "service"),
 		symbolFilters: make(map[string]*SymbolFilters),
 	}
+	if !cfg.DryRun {
+		if err := svc.bindState(); err != nil {
+			return nil, err
+		}
+	}
 
 	go svc.run()
 
 	return svc, nil
+}
+
+// bindState rejects legacy ledgers and accidental account/environment reuse.
+// A single process must own each account and database; this is not a lock.
+func (s *Service) bindState() error {
+	if s.cfg.StateID == "" {
+		return fmt.Errorf("state identity is required")
+	}
+	type stateIdentity struct {
+		Schema int    `json:"schema"`
+		ID     string `json:"id"`
+	}
+	var state stateIdentity
+	err := s.db.Get(s.ctx, "metadata", "identity", &state)
+	if err == nil {
+		if state.Schema != 1 || state.ID != s.cfg.StateID {
+			return fmt.Errorf("database schema/account/environment mismatch; reconcile before reuse")
+		}
+		return nil
+	}
+	if !errors.Is(err, storage.ErrNotFound) {
+		return err
+	}
+	for _, table := range []string{tableOrders, tablePositions, tableIntents} {
+		rows, err := s.db.List(s.ctx, table, func() any { return &map[string]any{} })
+		if err != nil {
+			return err
+		}
+		if len(rows) != 0 {
+			return fmt.Errorf("unversioned trading state; archive and reconcile against Binance before migration")
+		}
+	}
+	return s.db.Set(s.ctx, "metadata", "identity", stateIdentity{Schema: 1, ID: s.cfg.StateID})
 }
 
 // Close releases service resources.

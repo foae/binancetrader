@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -25,7 +26,7 @@ import (
 	slogchi "github.com/samber/slog-chi"
 	"github.com/shopspring/decimal"
 
-	"github.com/caarlos0/env/v10"
+	"github.com/caarlos0/env/v11"
 	_ "github.com/joho/godotenv/autoload"
 )
 
@@ -146,6 +147,7 @@ func main() {
 	svc, err := service.New(ctx, binanceClient, storageClient, service.Config{
 		Pairs:           pairs,
 		DryRun:          cfg.DryRun,
+		StateID:         fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.BinanceMode+"\x00"+cfg.BinanceAPIKey))),
 		BuyOffset:       buyOffset,
 		BuyQuantityUSDT: buyQuantityUSDT,
 		TakeProfit:      takeProfit,
@@ -281,13 +283,13 @@ func setupLogger(logFilePath string, level slog.Level) (*os.File, *slog.Logger, 
 	if logFilePath != "" && logFilePath != "-" {
 		logDir := filepath.Dir(logFilePath)
 		if logDir != "." && logDir != "/" {
-			if err := os.MkdirAll(logDir, 0755); err != nil {
+			if err := os.MkdirAll(logDir, 0o755); err != nil {
 				return nil, nil, err
 			}
 		}
 
 		var err error
-		logFile, err = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		logFile, err = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {
 			return nil, nil, err
 		}
